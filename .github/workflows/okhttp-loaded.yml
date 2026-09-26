@@ -1,0 +1,66 @@
+# LOADED capture — gradle-okhttp (PROVE plan, phase 0 → 1 gate, added 2026-09-26).
+#
+# The first Gradle LIBRARY cell. Excluded from Phase 0 because Gradle pins Temurin 21 by vendor and that
+# did not provision on macOS aarch64; trace-set.yaml said to re-test once capture moved to Actions. It has.
+# Declared environment copied from build.yml: ubuntu-latest, Temurin 21, `./gradlew test allTests`.
+#
+# The product Scanner is NOT run here: the released image predates the Gradle LOADED fix (engine
+# 6431636). This job only records; the fixed Scanner reads the traces locally, with the dependency lists
+# uploaded below as its manifest.
+name: LOADED capture — okhttp
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch to measure. Defaults to the corpus pin.
+        required: false
+        default: 'depproof-pinned'
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - name: Build (untraced)
+        run: ./gradlew --no-daemon assemble -x javadoc || true
+      - name: Tests, traced
+        env:
+          JAVA_TOOL_OPTIONS: -Xlog:class+load=info:file=${{ github.workspace }}/traces/trace-%p.log
+        run: |
+          mkdir -p traces
+          ./gradlew --no-daemon test allTests -Ptest.java.version=21 \
+            || echo "suite exited $? — a partial suite still yields a valid trace"
+      - name: Test results
+        if: always()
+        run: |
+          mkdir -p results
+          find . -path '*/test-results/*' -name 'TEST-*.xml' -exec cp {} results/ \; 2>/dev/null || true
+          ls results | wc -l
+      - name: Canary — the tracer attached to a test worker
+        run: |
+          n=$(cat traces/*.log 2>/dev/null | grep -c 'class,load' || true)
+          w=$(grep -l 'testing.worker.TestWorker ' traces/*.log 2>/dev/null | wc -l)
+          echo "$n class-load lines, $w test-worker processes"
+          [ "${n:-0}" -ge 1000 ] && [ "$w" -ge 1 ] || { echo "::error::no traced test worker"; exit 1; }
+      - name: Manifests for the local scan — Gradle's own resolved lists
+        if: always()
+        run: |
+          ./gradlew --no-daemon -q :okhttp:dependencies > deps-okhttp.txt 2>&1 || true
+          wc -l deps-okhttp.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loaded-okhttp
+          path: |
+            traces/
+            results/
+            deps-*.txt
+          retention-days: 30
