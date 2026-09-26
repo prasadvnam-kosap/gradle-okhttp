@@ -50,11 +50,24 @@ jobs:
           w=$(grep -l 'testing.worker.TestWorker ' traces/*.log 2>/dev/null | wc -l)
           echo "$n class-load lines, $w test-worker processes"
           [ "${n:-0}" -ge 1000 ] && [ "$w" -ge 1 ] || { echo "::error::no traced test worker"; exit 1; }
-      - name: Manifests for the local scan — Gradle's own resolved lists
+      # One report per module, as a multi-module customer produces them (PROVE-6): the runtime classpath
+      # (a Kotlin-multiplatform module's is jvmRuntimeClasspath). One module's report alone makes every
+      # other module's versions look like "a different build".
+      - name: Manifests for the local scan — one dependency report per module
         if: always()
         run: |
-          ./gradlew --no-daemon -q :okhttp:dependencies > deps-okhttp.txt 2>&1 || true
-          wc -l deps-okhttp.txt
+          mkdir -p deps
+          for p in $(./gradlew --no-daemon -q projects 2>/dev/null | grep -o "Project '[^']*'" | sed "s/Project '//; s/'//"); do
+            [ "$p" = ":" ] && continue
+            name=$(echo "$p" | tr ':' '_' | sed 's/^_//')
+            for cfg in jvmRuntimeClasspath runtimeClasspath; do
+              out="deps/$name/dependencies.txt"; mkdir -p "deps/$name"
+              ./gradlew --no-daemon -q "$p:dependencies" --configuration "$cfg" > "$out" 2>/dev/null \
+                && grep -q -- '--- ' "$out" && break
+              rm -f "$out"
+            done
+          done
+          find deps -name dependencies.txt | wc -l
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -62,5 +75,5 @@ jobs:
           path: |
             traces/
             results/
-            deps-*.txt
+            deps/
           retention-days: 30
