@@ -50,22 +50,18 @@ jobs:
           w=$(grep -l 'testing.worker.TestWorker ' traces/*.log 2>/dev/null | wc -l)
           echo "$n class-load lines, $w test-worker processes"
           [ "${n:-0}" -ge 1000 ] && [ "$w" -ge 1 ] || { echo "::error::no traced test worker"; exit 1; }
-      # One report per module, as a multi-module customer produces them (PROVE-6): the runtime classpath
-      # (a Kotlin-multiplatform module's is jvmRuntimeClasspath). One module's report alone makes every
-      # other module's versions look like "a different build".
-      - name: Manifests for the local scan — one dependency report per module
+      # One report per module, with EVERY configuration — the documented `./gradlew -q dependencies`, run per
+      # project as a multi-module customer does (PROVE-6). A runtime-only report misses the test classpath's
+      # own versions (junit 5.14.4 there vs 5.13.4 at runtime), which the trace legitimately holds.
+      - name: Manifests for the local scan — `dependencies` per module
         if: always()
         run: |
           mkdir -p deps
           for p in $(./gradlew --no-daemon -q projects 2>/dev/null | grep -o "Project '[^']*'" | sed "s/Project '//; s/'//"); do
             [ "$p" = ":" ] && continue
             name=$(echo "$p" | tr ':' '_' | sed 's/^_//')
-            for cfg in jvmRuntimeClasspath runtimeClasspath; do
-              out="deps/$name/dependencies.txt"; mkdir -p "deps/$name"
-              ./gradlew --no-daemon -q "$p:dependencies" --configuration "$cfg" > "$out" 2>/dev/null \
-                && grep -q -- '--- ' "$out" && break
-              rm -f "$out"
-            done
+            mkdir -p "deps/$name"
+            ./gradlew --no-daemon -q "$p:dependencies" > "deps/$name/dependencies.txt" 2>/dev/null || rm -rf "deps/$name"
           done
           find deps -name dependencies.txt | wc -l
       - uses: actions/upload-artifact@v4
